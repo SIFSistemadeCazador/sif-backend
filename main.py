@@ -34,20 +34,26 @@ class CazadorNuevo(BaseModel):
 
 @app.post("/crear_cazador")
 def crear_cazador(datos: CazadorNuevo, db: Session = Depends(get_db)):
-    # Creamos el registro en la tabla Usuario
+    from fastapi import HTTPException
+    
+    # --- 1. CANDADO ANTI-CLONES ---
+    # Buscamos en la base de datos si ya existe ese nombre de Cazador
+    cazador_existente = db.query(models.Usuario).filter(models.Usuario.nombre == datos.nombre).first()
+    
+    if cazador_existente:
+        # Si ya existe, abortamos la misión y lanzamos error
+        raise HTTPException(status_code=400, detail="Ese Alias ya está ocupado por otro Cazador.")
+        
+    # --- 2. SI NO EXISTE, LO CREAMOS NORMALMENTE ---
     nuevo_usuario = models.Usuario(
         nombre=datos.nombre,
         genero=datos.genero
     )
     db.add(nuevo_usuario)
     db.commit()
-    db.refresh(nuevo_usuario) # Recargamos para que SQLite nos dé tu número de ID oficial
+    db.refresh(nuevo_usuario) # Recargamos para que la BD nos dé el número de ID oficial
     
-    return {
-        "estatus": "¡Cazador Despertado!",
-        "mensaje": f"Bienvenido al sistema SIF, {nuevo_usuario.nombre}.",
-        "tu_id_oficial": nuevo_usuario.id
-    }
+    return {"tu_id_oficial": nuevo_usuario.id}
 
 # 1. Agregamos el grupo_muscular al molde
 class Entrenamiento(BaseModel):
