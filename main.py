@@ -194,6 +194,17 @@ CATALOGO_GRUPOS_MUSCULARES = {
     "Core": {"Abdomen": 0.80, "Espalda Baja": 0.20}
 }
 
+# --- TRADUCTOR PARA EL MAPA MUSCULAR PRINCIPAL ---
+MAPEO_GRUPOS_PRINCIPALES = {
+    "Pecho": "Pecho", "Pecho Superior": "Pecho", "Pecho Inferior": "Pecho",
+    "Espalda": "Espalda", "Espalda Baja": "Espalda", "Trapecio": "Espalda", "Dorsales": "Espalda", "Lumbares": "Espalda",
+    "Cuádriceps": "Pierna", "Isquiosurales": "Pierna", "Glúteo": "Pierna", "Glúteo Medio": "Pierna", "Pantorrilla": "Pierna", "Pantorrilla (Sóleo)": "Pierna", "Adductores": "Pierna",
+    "Hombro Frontal": "Hombro", "Hombro Medio": "Hombro", "Hombro Posterior": "Hombro", "Manguito Rotador": "Hombro",
+    "Bíceps": "Brazo", "Tríceps": "Brazo", "Antebrazo": "Brazo",
+    "Abdomen": "Core", "Abdomen Inferior": "Core", "Oblicuos": "Core", "Flexores de Cadera": "Core", "Core": "Core",
+    "General": "Core" # Respaldo de seguridad
+}
+
 FACTOR_MUSCULO = {
     "Pierna": 1.0,     # Músculos gigantes (Sentadilla) se miden normal
     "Espalda": 1.2,
@@ -362,12 +373,18 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
     db.add(nuevo_registro_historial)
     db.commit()
     
-    # 6. CALCULAMOS EL RANGO GLOBAL
+    # 6. CALCULAMOS EL RANGO GLOBAL AGRUPADO
     todos_los_musculos = db.query(models.MusculoXP).filter(
         models.MusculoXP.usuario_id == datos.usuario_id
     ).all()
     
-    promedio_niveles = sum(m.nivel for m in todos_los_musculos) / len(todos_los_musculos) if todos_los_musculos else 1.0
+    grupos_tmp = {"Pecho": 0.0, "Espalda": 0.0, "Pierna": 0.0, "Hombro": 0.0, "Brazo": 0.0, "Core": 0.0}
+    for m in todos_los_musculos:
+        cat = MAPEO_GRUPOS_PRINCIPALES.get(m.grupo_muscular, "Core")
+        grupos_tmp[cat] += m.xp_acumulada_kg
+
+    suma_niveles_tmp = sum(calcular_nivel(xp) for xp in grupos_tmp.values())
+    promedio_niveles = suma_niveles_tmp / 6.0
     rango_global = obtener_rango_global(promedio_niveles)
     
     return {
@@ -408,21 +425,32 @@ def ver_perfil_cazador(usuario_id: int, db: Session = Depends(get_db)):
             dias_penalizados = int(dias_inactivo) - 15
             factor_atrofia = (1 - 0.025) ** dias_penalizados
 
+    # --- AGRUPACIÓN PARA EL MAPA MUSCULAR (Bugs 1 y 2 resueltos) ---
+    grupos_consolidados = {
+        "Pecho": 0.0, "Espalda": 0.0, "Pierna": 0.0, 
+        "Hombro": 0.0, "Brazo": 0.0, "Core": 0.0
+    }
+    
+    for m in musculos:
+        # Aplicamos la atrofia metabólica
+        xp_efectiva = m.xp_acumulada_kg * factor_atrofia
+        # Buscamos su categoría principal
+        categoria_principal = MAPEO_GRUPOS_PRINCIPALES.get(m.grupo_muscular, "Core")
+        # Sumamos la XP al grupo mayor
+        grupos_consolidados[categoria_principal] += xp_efectiva
+
     mapa_musculos = {}
     suma_niveles = 0
     
-    for m in musculos:
-        # Aplicamos la merma metabólica a la XP real
-        xp_efectiva = m.xp_acumulada_kg * factor_atrofia
-        nivel_efectivo = calcular_nivel(xp_efectiva)
-        
+    for grupo, xp_total in grupos_consolidados.items():
+        # ¡Aquí los niveles se descongelan basados en la suma total!
+        nivel_efectivo = calcular_nivel(xp_total)
         suma_niveles += nivel_efectivo
-        mapa_musculos[m.grupo_muscular] = {"nivel": nivel_efectivo, "xp": round(xp_efectiva, 2)}
+        mapa_musculos[grupo] = {"nivel": nivel_efectivo, "xp": round(xp_total, 2)}
         
-    promedio_niveles = suma_niveles / len(musculos)
+    promedio_niveles = suma_niveles / 6.0 # Siempre promediamos sobre los 6 grupos maestros
     rango_actual = obtener_rango_global(promedio_niveles)
     nivel_general_entero = int(promedio_niveles)
-    
     return {
         "cazador": usuario.nombre,
         "rango_global": rango_actual,
