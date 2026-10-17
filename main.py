@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Depends
-from fastapi.middleware.cors import CORSMiddleware # <--- NUEVO
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import math
@@ -12,10 +12,10 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-# --- NUEVO: PERMISO PARA QUE TU INTERFAZ WEB SE CONECTE ---
+# --- PERMISO PARA QUE TU INTERFAZ WEB SE CONECTE ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite que cualquier HTML se conecte
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,41 +30,138 @@ def get_db():
         
 class CazadorNuevo(BaseModel):
     nombre: str
-    genero: str  # 'M' para que le hable de Leónidas o 'F' para Atenea
+    genero: str  # 'M' o 'F'
+
+# --- MOLDE PARA EL EXAMEN CIENTÍFICO DE CAZADOR ---
+class EvaluacionCazador(BaseModel):
+    usuario_id: int
+    peso_corporal_kg: float
+    meses_entrenando: int
+    dias_por_semana: int
+    peso_empuje_kg: float     # Press Banca o 0 si hizo Flexiones
+    reps_empuje: int
+    peso_traccion_kg: float   # Remo con Barra o 0 si hizo Dominadas
+    reps_traccion: int
+    peso_pierna_kg: float     # Sentadilla o 0 si fue a peso corporal
+    reps_pierna: int
 
 @app.post("/crear_cazador")
 def crear_cazador(datos: CazadorNuevo, db: Session = Depends(get_db)):
-    from fastapi import HTTPException
-    
-    # --- 1. CANDADO ANTI-CLONES ---
-    # Buscamos en la base de datos si ya existe ese nombre de Cazador
     cazador_existente = db.query(models.Usuario).filter(models.Usuario.nombre == datos.nombre).first()
     
     if cazador_existente:
-        # Si ya existe, abortamos la misión y lanzamos error
         raise HTTPException(status_code=400, detail="Ese Alias ya está ocupado por otro Cazador.")
         
-    # --- 2. SI NO EXISTE, LO CREAMOS NORMALMENTE ---
     nuevo_usuario = models.Usuario(
         nombre=datos.nombre,
         genero=datos.genero
     )
     db.add(nuevo_usuario)
     db.commit()
-    db.refresh(nuevo_usuario) # Recargamos para que la BD nos dé el número de ID oficial
+    db.refresh(nuevo_usuario)
     
     return {"tu_id_oficial": nuevo_usuario.id}
 
-# 1. Agregamos el grupo_muscular al molde
+# --- ENDPOINT: EXAMEN DE DESPERTAMIENTO (CALIBRACIÓN BANISTER) ---
+@app.post("/evaluar_cazador")
+def evaluar_cazador(datos: EvaluacionCazador, db: Session = Depends(get_db)):
+    usuario = db.query(models.Usuario).filter(models.Usuario.id == datos.usuario_id).first()
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Cazador no encontrado.")
+
+    p_empuje = datos.peso_empuje_kg if datos.peso_empuje_kg > 0 else (datos.peso_corporal_kg * 0.64)
+    p_traccion = datos.peso_traccion_kg if datos.peso_traccion_kg > 0 else (datos.peso_corporal_kg * 0.95)
+    p_pierna = datos.peso_pierna_kg if datos.peso_pierna_kg > 0 else (datos.peso_corporal_kg * 0.75)
+
+    rm_empuje = p_empuje * (1 + (datos.reps_empuje / 30.0)) if datos.reps_empuje > 0 else 0
+    rm_traccion = p_traccion * (1 + (datos.reps_traccion / 30.0)) if datos.reps_traccion > 0 else 0
+    rm_pierna = p_pierna * (1 + (datos.reps_pierna / 30.0)) if datos.reps_pierna > 0 else 0
+
+    promedio_1rm = (rm_empuje + rm_traccion + rm_pierna) / 3.0
+    ifr = promedio_1rm / max(datos.peso_corporal_kg, 40.0)
+
+    factor_experiencia = min(datos.meses_entrenando / 12.0, 2.0) * (datos.dias_por_semana / 4.0)
+    puntaje_cazador = (ifr * 0.75) + (factor_experiencia * 0.25)
+
+    if datos.meses_entrenando <= 1 or puntaje_cazador < 0.55:
+        rango_eval = "Rango E"
+        usuario.tau_1 = 45.0
+        usuario.tau_2 = 12.0
+    elif puntaje_cazador < 0.80:
+        rango_eval = "Rango D"
+        usuario.tau_1 = 42.0
+        usuario.tau_2 = 9.0
+    elif puntaje_cazador < 1.10:
+        rango_eval = "Rango C"
+        usuario.tau_1 = 42.0
+        usuario.tau_2 = 7.0
+    elif puntaje_cazador < 1.35:
+        rango_eval = "Rango B"
+        usuario.tau_1 = 40.0
+        usuario.tau_2 = 6.0
+    elif puntaje_cazador < 1.65:
+        rango_eval = "Rango A"
+        usuario.tau_1 = 38.0
+        usuario.tau_2 = 5.0
+    else:
+        rango_eval = "Rango S"
+        usuario.tau_1 = 35.0
+        usuario.tau_2 = 4.0
+
+    db.commit()
+
+    return {
+        "estatus": "Calibración Completada",
+        "rango_fisiologico_detectado": rango_eval,
+        "indice_fuerza_relativa": round(ifr, 2),
+        "tau_1_asignado": usuario.tau_1,
+        "tau_2_asignado": usuario.tau_2,
+        "mensaje": f"Biometría actualizada. Tu SNC ha sido calibrado con constantes de {rango_eval}."
+    }
+
 class Entrenamiento(BaseModel):
     usuario_id: int
-    peso_corporal_kg: float  # ¡Nuevo! Crucial para las categorías y multiplicadores
+    peso_corporal_kg: float
     ejercicio: str
     grupo_muscular: str
     peso: float
     unidad: str
     repeticiones: int
     series: int
+
+# --- BIOMECÁNICA DE CALISTENIA Y PESO CORPORAL (Peso = 0) ---
+PORCENTAJE_PESO_CORPORAL = {
+    "Flexiones (Push-ups)": 0.64,
+    "Flexiones Declinadas": 0.75,
+    "Fondos en Paralelas (Pecho)": 0.95,
+    "Fondos entre Bancos (Tríceps)": 0.70,
+    "Dominadas Pronas (Pull-ups)": 0.95,
+    "Dominadas Supinas (Chin-ups)": 0.95,
+    "Dominadas Neutras": 0.95,
+    "Hiperextensiones": 0.50,
+    "Sentadilla Libre (Back Squat)": 0.75,
+    "Sentadilla Búlgara": 0.65,
+    "Sentadilla Sissy": 0.70,
+    "Zancadas (Lunges) con Mancuernas": 0.65,
+    "Glute Bridge": 0.60,
+    "Elevación de Talones de Pie": 0.85,
+    "Crunch Abdominal Tradicional": 0.35,
+    "Elevación de Piernas Colgado": 0.55,
+    "Elevación de Piernas Acostado": 0.40,
+    "Rueda Abdominal (Ab Wheel)": 0.65,
+    "Plancha Isométrica (Plank)": 0.50,
+    "Plancha Lateral": 0.45,
+    "Russian Twists con Peso": 0.35,
+    "Toes to Bar (Pies a la Barra)": 0.65,
+    "Muscle-Up": 1.15,
+    "Fondos en Anillas": 1.00,
+    "Pino (Handstand Push-up)": 0.95,
+    "Progresión Front Lever": 0.85,
+    "Progresión Back Lever": 0.85,
+    "L-Sit (Isométrico)": 0.70,
+    "Pistol Squat (Sentadilla a 1 Pierna)": 0.90,
+    "Sprawls / Burpees": 0.70
+}
 
 # --- EL CATÁLOGO MAESTRO DE REPARTO DE XP (100 EJERCICIOS) ---
 CATALOGO_EJERCICIOS = {
@@ -185,33 +282,48 @@ CATALOGO_EJERCICIOS = {
     "Sprawls / Burpees": {"Core": 0.40, "Pecho": 0.20, "Cuádriceps": 0.20, "Hombro Frontal": 0.20}
 }
 
+# --- SINCRONIZADO CON LOS NOMBRES EXACTOS DE TU SELECT EN HTML ---
 CATALOGO_GRUPOS_MUSCULARES = {
     "Pecho": {"Pecho": 0.80, "Tríceps": 0.10, "Hombro Frontal": 0.10},
     "Espalda": {"Espalda": 0.80, "Bíceps": 0.20},
     "Pierna": {"Cuádriceps": 0.40, "Isquiosurales": 0.40, "Glúteo": 0.20},
+    "Piernas y Glúteo": {"Cuádriceps": 0.40, "Isquiosurales": 0.40, "Glúteo": 0.20},
     "Hombro": {"Hombro Medio": 0.50, "Hombro Frontal": 0.30, "Hombro Posterior": 0.20},
+    "Hombros y Trapecio": {"Hombro Medio": 0.50, "Hombro Frontal": 0.30, "Hombro Posterior": 0.20},
     "Brazo": {"Bíceps": 0.50, "Tríceps": 0.50},
-    "Core": {"Abdomen": 0.80, "Espalda Baja": 0.20}
+    "Brazos": {"Bíceps": 0.50, "Tríceps": 0.50},
+    "Core": {"Abdomen": 0.80, "Espalda Baja": 0.20},
+    "Core y Abdomen": {"Abdomen": 0.80, "Espalda Baja": 0.20},
+    "Calistenia": {"Espalda": 0.35, "Pecho": 0.35, "Core": 0.30},
+    "Combate Táctico": {"Hombro Frontal": 0.35, "Core": 0.35, "Pierna": 0.30}
 }
 
 # --- TRADUCTOR PARA EL MAPA MUSCULAR PRINCIPAL ---
 MAPEO_GRUPOS_PRINCIPALES = {
     "Pecho": "Pecho", "Pecho Superior": "Pecho", "Pecho Inferior": "Pecho",
     "Espalda": "Espalda", "Espalda Baja": "Espalda", "Trapecio": "Espalda", "Dorsales": "Espalda", "Lumbares": "Espalda",
-    "Cuádriceps": "Pierna", "Isquiosurales": "Pierna", "Glúteo": "Pierna", "Glúteo Medio": "Pierna", "Pantorrilla": "Pierna", "Pantorrilla (Sóleo)": "Pierna", "Adductores": "Pierna",
-    "Hombro Frontal": "Hombro", "Hombro Medio": "Hombro", "Hombro Posterior": "Hombro", "Manguito Rotador": "Hombro",
-    "Bíceps": "Brazo", "Tríceps": "Brazo", "Antebrazo": "Brazo",
+    "Cuádriceps": "Pierna", "Isquiosurales": "Pierna", "Glúteo": "Pierna", "Glúteo Medio": "Pierna", "Pantorrilla": "Pierna", "Pantorrilla (Sóleo)": "Pierna", "Adductores": "Pierna", "Pierna": "Pierna",
+    "Hombro Frontal": "Hombro", "Hombro Medio": "Hombro", "Hombro Posterior": "Hombro", "Manguito Rotador": "Hombro", "Hombro": "Hombro",
+    "Bíceps": "Brazo", "Tríceps": "Brazo", "Antebrazo": "Brazo", "Brazo": "Brazo",
     "Abdomen": "Core", "Abdomen Inferior": "Core", "Oblicuos": "Core", "Flexores de Cadera": "Core", "Core": "Core",
-    "General": "Core" # Respaldo de seguridad
+    "General": "Core"
 }
 
+# --- JUSTICIA BIOMECÁNICA SINCRONIZADA CON EL HTML ---
 FACTOR_MUSCULO = {
-    "Pierna": 1.0,     # Músculos gigantes (Sentadilla) se miden normal
+    "Pierna": 1.0,
+    "Piernas y Glúteo": 1.0,
     "Espalda": 1.2,
     "Pecho": 1.2,
-    "Hombro": 2.0,     # Músculos medianos
-    "Brazo": 3.0,      # Bíceps y Tríceps reciben un buff x3 en su cálculo
-    "Antebrazo": 4.0,  # Músculos diminutos reciben un buff x4
+    "Hombro": 2.2,
+    "Hombros y Trapecio": 2.2,
+    "Brazo": 3.0,
+    "Brazos": 3.0,
+    "Core": 3.5,
+    "Core y Abdomen": 3.5,
+    "Calistenia": 2.0,
+    "Combate Táctico": 2.5,
+    "Antebrazo": 4.0,
     "Pantorrilla": 3.0
 }
 
@@ -271,12 +383,11 @@ LORE_HISTORICO = {
 
 # --- EL MOTOR DE NIVELES (TIPO RPG) ---
 def calcular_nivel(xp_acumulada: float):
-    # Fórmula: Cada nivel pide exponencialmente más XP. Nivel = Raíz cuadrada de (XP / 100)
     nivel_calculado = int(math.sqrt(xp_acumulada / 100.0))
     if nivel_calculado < 1:
         return 1
     elif nivel_calculado > 25:
-        return 25 # Tope en el Nivel 25 (Olimpo)
+        return 25
     return nivel_calculado
 
 def obtener_rango_global(promedio_niveles: float):
@@ -287,9 +398,6 @@ def obtener_rango_global(promedio_niveles: float):
     elif promedio_niveles < 24: return "Rango A (Fuerza Principal)"
     else: return "Rango S (Cazador de Nivel Nacional)"
 
-
-
-# --- SISTEMA DE CATEGORÍAS DE PESO (MITOLOGÍA) ---
 def obtener_categoria_peso(peso_kg: float):
     if peso_kg < 65: return "Hermes (Ligero)"
     elif peso_kg < 75: return "Apolo (Welter)"
@@ -304,25 +412,28 @@ def estado_servidor():
 @app.post("/registrar_entrenamiento")
 def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
     
-    # 0. Buscamos al usuario para saber su género
     usuario = db.query(models.Usuario).filter(models.Usuario.id == datos.usuario_id).first()
     if not usuario:
         return {"estatus": "error", "mensaje": "El Cazador no existe en el Sistema."}
     
-    # 1. Estandarización a Kilos
-    if datos.unidad == "lb":
-        peso_estandar = datos.peso * 0.453592
+    # 1. Estandarización a Kilos + DETECCIÓN AUTOMÁTICA DE PESO CORPORAL (PESO = 0)
+    if datos.peso <= 0:
+        porcentaje_bw = PORCENTAJE_PESO_CORPORAL.get(datos.ejercicio, 0.50)
+        peso_estandar = datos.peso_corporal_kg * porcentaje_bw
     else:
-        peso_estandar = datos.peso 
+        if datos.unidad == "lb":
+            peso_estandar = datos.peso * 0.453592
+        else:
+            peso_estandar = datos.peso 
         
     tonelaje_interno_kg = peso_estandar * datos.repeticiones * datos.series
     
     # 2. CÁLCULO DE 1RM Y JUSTICIA BIOMECÁNICA
     calculo_1rm_kg = peso_estandar * (1 + (datos.repeticiones / 30.0))
-    factor = FACTOR_MUSCULO.get(datos.grupo_muscular, 1.0)
+    factor = FACTOR_MUSCULO.get(datos.grupo_muscular, 1.5)
     fuerza_ajustada = calculo_1rm_kg * factor
     
-    multiplicador_fuerza = fuerza_ajustada / datos.peso_corporal_kg
+    multiplicador_fuerza = fuerza_ajustada / max(datos.peso_corporal_kg, 40.0)
     xp_base_total = tonelaje_interno_kg * multiplicador_fuerza
 
     # 3. EL FILTRO INTELIGENTE
@@ -354,7 +465,6 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
             )
             db.add(musculo_db)
             
-        # ¡Magia del Motor RPG! Calculamos el nuevo nivel
         nivel_nuevo = calcular_nivel(musculo_db.xp_acumulada_kg)
         musculo_db.nivel = nivel_nuevo
         
@@ -390,6 +500,8 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
     return {
         "estatus": "Entrenamiento Registrado",
         "rango_global_actualizado": rango_global,
+        "nivel_promedio_actualizado": round(promedio_niveles, 1),
+        "peso_efectivo_calculado_kg": round(peso_estandar, 1),
         "estadisticas_combate": {
             "multiplicador_aplicado": round(multiplicador_fuerza, 2),
             "tonelaje_interno": round(xp_base_total, 2)
@@ -407,7 +519,6 @@ def ver_perfil_cazador(usuario_id: int, db: Session = Depends(get_db)):
     if not musculos:
         return {"cazador": usuario.nombre, "rango_global": "Rango E (Despertado)", "mensaje": LORE_HISTORICO[1][usuario.genero]}
         
-    # --- SISTEMA DE ATROFIA MUSCULAR (Decaimiento Exponencial) ---
     ultimo_entrenamiento = db.query(models.HistorialEntrenamiento).filter(
         models.HistorialEntrenamiento.usuario_id == usuario_id
     ).order_by(models.HistorialEntrenamiento.fecha_hora.desc()).first()
@@ -420,37 +531,31 @@ def ver_perfil_cazador(usuario_id: int, db: Session = Depends(get_db)):
         fecha_ultima = ultimo_entrenamiento.fecha_hora.replace(tzinfo=datetime.timezone.utc) if ultimo_entrenamiento.fecha_hora.tzinfo is None else ultimo_entrenamiento.fecha_hora
         dias_inactivo = (ahora - fecha_ultima).total_seconds() / (24 * 3600)
         
-        # Si pasan 15 días, pierde 2.5% de XP por cada día extra de inactividad
         if dias_inactivo >= 15:
             dias_penalizados = int(dias_inactivo) - 15
             factor_atrofia = (1 - 0.025) ** dias_penalizados
 
-    # --- AGRUPACIÓN PARA EL MAPA MUSCULAR (Bugs 1 y 2 resueltos) ---
     grupos_consolidados = {
         "Pecho": 0.0, "Espalda": 0.0, "Pierna": 0.0, 
         "Hombro": 0.0, "Brazo": 0.0, "Core": 0.0
     }
     
     for m in musculos:
-        # Aplicamos la atrofia metabólica
         xp_efectiva = m.xp_acumulada_kg * factor_atrofia
-        # Buscamos su categoría principal
         categoria_principal = MAPEO_GRUPOS_PRINCIPALES.get(m.grupo_muscular, "Core")
-        # Sumamos la XP al grupo mayor
         grupos_consolidados[categoria_principal] += xp_efectiva
 
     mapa_musculos = {}
     suma_niveles = 0
     
     for grupo, xp_total in grupos_consolidados.items():
-        # ¡Aquí los niveles se descongelan basados en la suma total!
         nivel_efectivo = calcular_nivel(xp_total)
         suma_niveles += nivel_efectivo
         mapa_musculos[grupo] = {"nivel": nivel_efectivo, "xp": round(xp_total, 2)}
         
-    promedio_niveles = suma_niveles / 6.0 # Siempre promediamos sobre los 6 grupos maestros
+    promedio_niveles = suma_niveles / 6.0
     rango_actual = obtener_rango_global(promedio_niveles)
-    nivel_general_entero = int(promedio_niveles)
+    nivel_general_entero = max(1, int(promedio_niveles))
     return {
         "cazador": usuario.nombre,
         "rango_global": rango_actual,
@@ -468,32 +573,52 @@ def calcular_estamina(usuario_id: int, db: Session = Depends(get_db)):
         models.HistorialEntrenamiento.usuario_id == usuario_id
     ).order_by(models.HistorialEntrenamiento.fecha_hora.desc()).all()
     
-    if not historial: return {"diagnostico": "Fresco, sin experiencia.", "estamina": 0.0, "dias_inactivo": 0}
+    # Si no hay entrenamientos, mandamos 0 de fatiga (el HTML lo convierte en 100% de vida)
+    if not historial: return {"diagnostico": "⚡ ¡Condición Óptima!", "estamina": 0.0, "dias_inactivo": 0}
         
     ahora = datetime.datetime.now(datetime.timezone.utc)
-    condicion_total = 0.0
+    
+    tau_1 = usuario.tau_1 if usuario.tau_1 else 42.0
+    tau_2 = usuario.tau_2 if usuario.tau_2 else 7.0
+    
+    # Colchón de condición base crónica (CTL_0) según su nivel de acondicionamiento
+    colchon_snc_base = (15.0 / max(tau_2, 4.0)) * 25000.0
+    
+    condicion_total = colchon_snc_base
     fatiga_total = 0.0
     
-    # Extraemos el último entrenamiento real para mandar los días inactivos a la alerta roja del HTML
     ultimo_ent = historial[0]
-    fecha_ultima = ultimo_ent.fecha_hora.replace(tzinfo=datetime.timezone.utc) if ultimo_ent.fecha_hora.tzinfo is None else ultimo_ent.fecha_hora
+    fecha_ultima = ultimo_ent.fecha_hora.replace(tzinfo=datetime.timezone.utc) if ultimo_ent.fecha_hora.tzinfo is None else ultimo_entrenamiento_fecha(ultimo_ent)
     dias_inactivo = (ahora - fecha_ultima).total_seconds() / (24 * 3600)
     
     for registro in historial:
         fecha_registro = registro.fecha_hora.replace(tzinfo=datetime.timezone.utc) if registro.fecha_hora.tzinfo is None else registro.fecha_hora
-        dias_pasados = (ahora - fecha_registro).total_seconds() / (24 * 3600)
+        dias_pasados = max(0.0, (ahora - fecha_registro).total_seconds() / (24 * 3600))
         carga = registro.carga_xp
-        condicion_total += carga * math.exp(-dias_pasados / usuario.tau_1)
-        fatiga_total += carga * math.exp(-dias_pasados / usuario.tau_2)
         
-    rendimiento_neto = condicion_total - fatiga_total
+        condicion_total += (carga * 1.0) * math.exp(-dias_pasados / tau_1)
+        fatiga_total += (carga * 1.25) * math.exp(-dias_pasados / tau_2)
+        
+    # Calculamos el desgaste relativo:
+    # Tu HTML hace: porcentajeSNC = 100 - (estaminaCruda * 0.5)
+    # Por lo tanto, mandamos 'indice_desgaste' en escala de 0 a 190 para que el HTML muestre de 100% a 5% de forma exacta
+    ratio_desgaste = fatiga_total / max(condicion_total, 1.0)
+    indice_desgaste_para_html = min(190.0, ratio_desgaste * 90.0)
     
-    if fatiga_total > condicion_total: estado_cazador = "⚠️ Sistema Sobrecargado"
-    elif rendimiento_neto > 0 and fatiga_total < (condicion_total * 0.3): estado_cazador = "⚡ ¡Condición Óptima!"
-    else: estado_cazador = "🔋 En recuperación activa."
+    vida_real = 100.0 - (indice_desgaste_para_html * 0.5)
+    
+    if vida_real < 30.0:
+        estado_cazador = "⚠️ Sistema Sobrecargado"
+    elif vida_real >= 70.0:
+        estado_cazador = "⚡ ¡Condición Óptima!"
+    else:
+        estado_cazador = "🔋 En recuperación activa."
         
     return {
         "diagnostico": estado_cazador, 
-        "estamina": round(rendimiento_neto, 2),
-        "dias_inactivo": int(dias_inactivo) # <-- Esto dispara el catabolismo en tu HTML
+        "estamina": round(indice_desgaste_para_html, 1),
+        "dias_inactivo": int(dias_inactivo)
     }
+
+def ultimo_entrenamiento_fecha(registro):
+    return registro.fecha_hora.replace(tzinfo=datetime.timezone.utc) if registro.fecha_hora.tzinfo is None else registro.fecha_hora
