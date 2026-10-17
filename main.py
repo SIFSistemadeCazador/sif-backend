@@ -12,7 +12,6 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-# --- PERMISO PARA QUE TU INTERFAZ WEB SE CONECTE ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,17 +31,18 @@ class CazadorNuevo(BaseModel):
     nombre: str
     genero: str  # 'M' o 'F'
 
-# --- MOLDE PARA EL EXAMEN CIENTÍFICO DE CAZADOR ---
+# --- MOLDE PARA EL EXAMEN CIENTÍFICO DE CAZADOR (CON SOPORTE KG/LB) ---
 class EvaluacionCazador(BaseModel):
     usuario_id: int
     peso_corporal_kg: float
+    unidad_examen: str = "kg"  # 'kg' o 'lb'
     meses_entrenando: int
     dias_por_semana: int
-    peso_empuje_kg: float     # Press Banca o 0 si hizo Flexiones
+    peso_empuje: float         # Press Banca o 0 si hizo Flexiones
     reps_empuje: int
-    peso_traccion_kg: float   # Remo con Barra o 0 si hizo Dominadas
+    peso_traccion: float       # Remo con Barra o 0 si hizo Dominadas
     reps_traccion: int
-    peso_pierna_kg: float     # Sentadilla o 0 si fue a peso corporal
+    peso_pierna: float         # Sentadilla o 0 si fue a peso corporal
     reps_pierna: int
 
 @app.post("/crear_cazador")
@@ -62,61 +62,95 @@ def crear_cazador(datos: CazadorNuevo, db: Session = Depends(get_db)):
     
     return {"tu_id_oficial": nuevo_usuario.id}
 
-# --- ENDPOINT: EXAMEN DE DESPERTAMIENTO (CALIBRACIÓN BANISTER) ---
+# --- ENDPOINT: EXAMEN DE DESPERTAMIENTO (ASIGNA RANGO, NIVEL BASE Y BANISTER) ---
 @app.post("/evaluar_cazador")
 def evaluar_cazador(datos: EvaluacionCazador, db: Session = Depends(get_db)):
     usuario = db.query(models.Usuario).filter(models.Usuario.id == datos.usuario_id).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="Cazador no encontrado.")
 
-    p_empuje = datos.peso_empuje_kg if datos.peso_empuje_kg > 0 else (datos.peso_corporal_kg * 0.64)
-    p_traccion = datos.peso_traccion_kg if datos.peso_traccion_kg > 0 else (datos.peso_corporal_kg * 0.95)
-    p_pierna = datos.peso_pierna_kg if datos.peso_pierna_kg > 0 else (datos.peso_corporal_kg * 0.75)
+    factor_conv = 0.453592 if datos.unidad_examen.lower() == "lb" else 1.0
+    peso_corp_kg = datos.peso_corporal_kg * factor_conv if datos.unidad_examen.lower() == "lb" else datos.peso_corporal_kg
 
-    rm_empuje = p_empuje * (1 + (datos.reps_empuje / 30.0)) if datos.reps_empuje > 0 else 0
-    rm_traccion = p_traccion * (1 + (datos.reps_traccion / 30.0)) if datos.reps_traccion > 0 else 0
-    rm_pierna = p_pierna * (1 + (datos.reps_pierna / 30.0)) if datos.reps_pierna > 0 else 0
+    p_emp_kg = (datos.peso_empuje * factor_conv) if datos.peso_empuje > 0 else (peso_corp_kg * 0.64)
+    p_trac_kg = (datos.peso_traccion * factor_conv) if datos.peso_traccion > 0 else (peso_corp_kg * 0.95)
+    p_pier_kg = (datos.peso_pierna * factor_conv) if datos.peso_pierna > 0 else (peso_corp_kg * 0.75)
+
+    rm_empuje = p_emp_kg * (1 + (datos.reps_empuje / 30.0)) if datos.reps_empuje > 0 else 0
+    rm_traccion = p_trac_kg * (1 + (datos.reps_traccion / 30.0)) if datos.reps_traccion > 0 else 0
+    rm_pierna = p_pier_kg * (1 + (datos.reps_pierna / 30.0)) if datos.reps_pierna > 0 else 0
 
     promedio_1rm = (rm_empuje + rm_traccion + rm_pierna) / 3.0
-    ifr = promedio_1rm / max(datos.peso_corporal_kg, 40.0)
+    ifr = promedio_1rm / max(peso_corp_kg, 40.0)
 
     factor_experiencia = min(datos.meses_entrenando / 12.0, 2.0) * (datos.dias_por_semana / 4.0)
     puntaje_cazador = (ifr * 0.75) + (factor_experiencia * 0.25)
 
+    # Asignación Científica: Rango + Nivel Inicial del Rango + Constantes Banister
     if datos.meses_entrenando <= 1 or puntaje_cazador < 0.55:
-        rango_eval = "Rango E"
+        rango_eval = "Rango E (Despertado)"
+        nivel_base_rango = 1
         usuario.tau_1 = 45.0
         usuario.tau_2 = 12.0
     elif puntaje_cazador < 0.80:
-        rango_eval = "Rango D"
+        rango_eval = "Rango D (Novato de Gremio)"
+        nivel_base_rango = 5
         usuario.tau_1 = 42.0
         usuario.tau_2 = 9.0
     elif puntaje_cazador < 1.10:
-        rango_eval = "Rango C"
+        rango_eval = "Rango C (Veterano de Incursión)"
+        nivel_base_rango = 10
         usuario.tau_1 = 42.0
         usuario.tau_2 = 7.0
     elif puntaje_cazador < 1.35:
-        rango_eval = "Rango B"
+        rango_eval = "Rango B (Élite de Asalto)"
+        nivel_base_rango = 15
         usuario.tau_1 = 40.0
         usuario.tau_2 = 6.0
     elif puntaje_cazador < 1.65:
-        rango_eval = "Rango A"
+        rango_eval = "Rango A (Fuerza Principal)"
+        nivel_base_rango = 20
         usuario.tau_1 = 38.0
         usuario.tau_2 = 5.0
     else:
-        rango_eval = "Rango S"
+        rango_eval = "Rango S (Cazador de Nivel Nacional)"
+        nivel_base_rango = 24
         usuario.tau_1 = 35.0
         usuario.tau_2 = 4.0
+
+    # Inyectamos la XP base para que el Cazador inicie en el piso de su Rango asignado
+    # Como calcular_nivel(xp) = sqrt(xp / 100), entonces xp_necesaria = (nivel^2) * 100
+    xp_piso_rango = float((nivel_base_rango ** 2) * 100) if nivel_base_rango > 1 else 100.0
+    grupos_maestros = ["Pecho", "Espalda", "Pierna", "Hombro", "Brazo", "Core"]
+
+    for grp in grupos_maestros:
+        musculo_db = db.query(models.MusculoXP).filter(
+            models.MusculoXP.usuario_id == datos.usuario_id,
+            models.MusculoXP.grupo_muscular == grp
+        ).first()
+        if musculo_db:
+            if musculo_db.xp_acumulada_kg < xp_piso_rango:
+                musculo_db.xp_acumulada_kg = xp_piso_rango
+                musculo_db.nivel = nivel_base_rango
+        else:
+            nuevo_m = models.MusculoXP(
+                usuario_id=datos.usuario_id,
+                grupo_muscular=grp,
+                xp_acumulada_kg=xp_piso_rango,
+                nivel=nivel_base_rango
+            )
+            db.add(nuevo_m)
 
     db.commit()
 
     return {
         "estatus": "Calibración Completada",
         "rango_fisiologico_detectado": rango_eval,
+        "nivel_inicial_asignado": nivel_base_rango,
         "indice_fuerza_relativa": round(ifr, 2),
         "tau_1_asignado": usuario.tau_1,
         "tau_2_asignado": usuario.tau_2,
-        "mensaje": f"Biometría actualizada. Tu SNC ha sido calibrado con constantes de {rango_eval}."
+        "mensaje": f"Se te ha asignado el {rango_eval} (Inicias en Nivel {nivel_base_rango})."
     }
 
 class Entrenamiento(BaseModel):
@@ -129,7 +163,6 @@ class Entrenamiento(BaseModel):
     repeticiones: int
     series: int
 
-# --- BIOMECÁNICA DE CALISTENIA Y PESO CORPORAL (Peso = 0) ---
 PORCENTAJE_PESO_CORPORAL = {
     "Flexiones (Push-ups)": 0.64,
     "Flexiones Declinadas": 0.75,
@@ -163,7 +196,6 @@ PORCENTAJE_PESO_CORPORAL = {
     "Sprawls / Burpees": 0.70
 }
 
-# --- EL CATÁLOGO MAESTRO DE REPARTO DE XP (100 EJERCICIOS) ---
 CATALOGO_EJERCICIOS = {
     # --- PECHO (15) ---
     "Press de Banca Plano": {"Pecho": 0.70, "Tríceps": 0.20, "Hombro Frontal": 0.10},
@@ -282,7 +314,6 @@ CATALOGO_EJERCICIOS = {
     "Sprawls / Burpees": {"Core": 0.40, "Pecho": 0.20, "Cuádriceps": 0.20, "Hombro Frontal": 0.20}
 }
 
-# --- SINCRONIZADO CON LOS NOMBRES EXACTOS DE TU SELECT EN HTML ---
 CATALOGO_GRUPOS_MUSCULARES = {
     "Pecho": {"Pecho": 0.80, "Tríceps": 0.10, "Hombro Frontal": 0.10},
     "Espalda": {"Espalda": 0.80, "Bíceps": 0.20},
@@ -298,7 +329,6 @@ CATALOGO_GRUPOS_MUSCULARES = {
     "Combate Táctico": {"Hombro Frontal": 0.35, "Core": 0.35, "Pierna": 0.30}
 }
 
-# --- TRADUCTOR PARA EL MAPA MUSCULAR PRINCIPAL ---
 MAPEO_GRUPOS_PRINCIPALES = {
     "Pecho": "Pecho", "Pecho Superior": "Pecho", "Pecho Inferior": "Pecho",
     "Espalda": "Espalda", "Espalda Baja": "Espalda", "Trapecio": "Espalda", "Dorsales": "Espalda", "Lumbares": "Espalda",
@@ -309,7 +339,6 @@ MAPEO_GRUPOS_PRINCIPALES = {
     "General": "Core"
 }
 
-# --- JUSTICIA BIOMECÁNICA SINCRONIZADA CON EL HTML ---
 FACTOR_MUSCULO = {
     "Pierna": 1.0,
     "Piernas y Glúteo": 1.0,
@@ -327,7 +356,6 @@ FACTOR_MUSCULO = {
     "Pantorrilla": 3.0
 }
 
-# --- LORE HISTÓRICO Y MITOLÓGICO POR NIVELES (1 - 25) ---
 LORE_HISTORICO = {
     1: {"M": "[Sistema] Despertar completado. Eres un Cazador Rango E. Tus estadísticas físicas base son las de un civil.", 
         "F": "[Sistema] Despertar completado. Eres una Cazadora Rango E. Tus estadísticas físicas base son las de un civil."},
@@ -381,7 +409,6 @@ LORE_HISTORICO = {
          "F": "[Sistema] Rango de Nivel Nacional. Recipiente del Monarca. Eres una anomalía absoluta. La diosa de la cacería de este mundo."}
 }
 
-# --- EL MOTOR DE NIVELES (TIPO RPG) ---
 def calcular_nivel(xp_acumulada: float):
     nivel_calculado = int(math.sqrt(xp_acumulada / 100.0))
     if nivel_calculado < 1:
@@ -411,12 +438,11 @@ def estado_servidor():
 
 @app.post("/registrar_entrenamiento")
 def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
-    
     usuario = db.query(models.Usuario).filter(models.Usuario.id == datos.usuario_id).first()
     if not usuario:
         return {"estatus": "error", "mensaje": "El Cazador no existe en el Sistema."}
     
-    # 1. Estandarización a Kilos + DETECCIÓN AUTOMÁTICA DE PESO CORPORAL (PESO = 0)
+    # Si peso > 0 usa el peso que le pusiste (ej. Crunch con disco); si es 0 usa % corporal
     if datos.peso <= 0:
         porcentaje_bw = PORCENTAJE_PESO_CORPORAL.get(datos.ejercicio, 0.50)
         peso_estandar = datos.peso_corporal_kg * porcentaje_bw
@@ -428,7 +454,6 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
         
     tonelaje_interno_kg = peso_estandar * datos.repeticiones * datos.series
     
-    # 2. CÁLCULO DE 1RM Y JUSTICIA BIOMECÁNICA
     calculo_1rm_kg = peso_estandar * (1 + (datos.repeticiones / 30.0))
     factor = FACTOR_MUSCULO.get(datos.grupo_muscular, 1.5)
     fuerza_ajustada = calculo_1rm_kg * factor
@@ -436,7 +461,6 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
     multiplicador_fuerza = fuerza_ajustada / max(datos.peso_corporal_kg, 40.0)
     xp_base_total = tonelaje_interno_kg * multiplicador_fuerza
 
-    # 3. EL FILTRO INTELIGENTE
     if datos.ejercicio in CATALOGO_EJERCICIOS:
         distribucion = CATALOGO_EJERCICIOS[datos.ejercicio]
     elif datos.grupo_muscular in CATALOGO_GRUPOS_MUSCULARES:
@@ -444,7 +468,6 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
     else:
         distribucion = {"General": 1.0}
     
-    # 4. REPARTIMOS XP, SUBIMOS DE NIVEL Y SACAMOS EL LORE
     progreso_musculos = {}
     for nombre_musculo, porcentaje in distribucion.items():
         xp_ganada = round(xp_base_total * porcentaje, 2)
@@ -474,7 +497,6 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
             "mensaje_sistema": LORE_HISTORICO.get(nivel_nuevo, LORE_HISTORICO[25])[usuario.genero]
         }
             
-    # 5. REGISTRO EN LA BITÁCORA DEL TIEMPO
     nuevo_registro_historial = models.HistorialEntrenamiento(
         usuario_id=datos.usuario_id,
         ejercicio=datos.ejercicio,
@@ -483,7 +505,6 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
     db.add(nuevo_registro_historial)
     db.commit()
     
-    # 6. CALCULAMOS EL RANGO GLOBAL AGRUPADO
     todos_los_musculos = db.query(models.MusculoXP).filter(
         models.MusculoXP.usuario_id == datos.usuario_id
     ).all()
@@ -573,7 +594,6 @@ def calcular_estamina(usuario_id: int, db: Session = Depends(get_db)):
         models.HistorialEntrenamiento.usuario_id == usuario_id
     ).order_by(models.HistorialEntrenamiento.fecha_hora.desc()).all()
     
-    # Si no hay entrenamientos, mandamos 0 de fatiga (el HTML lo convierte en 100% de vida)
     if not historial: return {"diagnostico": "⚡ ¡Condición Óptima!", "estamina": 0.0, "dias_inactivo": 0}
         
     ahora = datetime.datetime.now(datetime.timezone.utc)
@@ -581,7 +601,6 @@ def calcular_estamina(usuario_id: int, db: Session = Depends(get_db)):
     tau_1 = usuario.tau_1 if usuario.tau_1 else 42.0
     tau_2 = usuario.tau_2 if usuario.tau_2 else 7.0
     
-    # Colchón de condición base crónica (CTL_0) según su nivel de acondicionamiento
     colchon_snc_base = (15.0 / max(tau_2, 4.0)) * 25000.0
     
     condicion_total = colchon_snc_base
@@ -599,9 +618,6 @@ def calcular_estamina(usuario_id: int, db: Session = Depends(get_db)):
         condicion_total += (carga * 1.0) * math.exp(-dias_pasados / tau_1)
         fatiga_total += (carga * 1.25) * math.exp(-dias_pasados / tau_2)
         
-    # Calculamos el desgaste relativo:
-    # Tu HTML hace: porcentajeSNC = 100 - (estaminaCruda * 0.5)
-    # Por lo tanto, mandamos 'indice_desgaste' en escala de 0 a 190 para que el HTML muestre de 100% a 5% de forma exacta
     ratio_desgaste = fatiga_total / max(condicion_total, 1.0)
     indice_desgaste_para_html = min(190.0, ratio_desgaste * 90.0)
     
