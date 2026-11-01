@@ -618,3 +618,30 @@ def calcular_estamina(usuario_id: str):
         "estamina": round(fatiga_actual, 1),
         "dias_inactivo": int(dias_inactivo)
     }
+class LoginDatos(BaseModel):
+    email: str
+    password: str
+
+@app.post("/iniciar_sesion")
+def iniciar_sesion(datos: LoginDatos):
+    try:
+        # 1. Supabase verifica que el correo y contraseña sean reales
+        res_auth = supabase.auth.sign_in_with_password({
+            "email": datos.email,
+            "password": datos.password
+        })
+        usuario_id = res_auth.user.id
+        
+        # 2. Descargamos el peso y alias directo de la bóveda
+        perfil = supabase.table("cazadores").select("alias, peso_kg").eq("id", usuario_id).execute()
+        
+        if not perfil.data:
+            raise HTTPException(status_code=404, detail="Perfil no encontrado en la base de datos.")
+            
+        return {
+            "tu_id_oficial": usuario_id,
+            "alias": perfil.data[0]["alias"],
+            "peso_kg": perfil.data[0]["peso_kg"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas o el Cazador no existe.")
