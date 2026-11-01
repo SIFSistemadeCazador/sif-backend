@@ -1,14 +1,19 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from supabase import create_client, Client
 import math
 import datetime
 
-import models
-from database import engine, SessionLocal
+# =========================================================================================
+# 🔗 CREDENCIALES DE SUPABASE (LA BÓVEDA DEL COLISEO)
+# Ya están inyectadas tus credenciales oficiales
+# =========================================================================================
+SUPABASE_URL = "https://alwdlkbwfdblkwhzlkvi.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFsd2Rsa2J3ZmRibGt3aHpsa3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTExNDk2NDksImV4cCI6MjEwNjcyNTY0OX0.IWfOg-A3iDuyzEXNXJctYzKk_kc7TV3SgTTOR-oQ5t0"
 
-models.Base.metadata.create_all(bind=engine)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# =========================================================================================
 
 app = FastAPI()
 
@@ -19,142 +24,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
         
 class CazadorNuevo(BaseModel):
     nombre: str
     genero: str  # 'M' o 'F'
+    email: str   # Añadido para Supabase Auth
+    password: str # Añadido para Supabase Auth
 
-# --- MOLDE PARA EL EXAMEN CIENTÍFICO DE CAZADOR (CON SOPORTE KG/LB) ---
 class EvaluacionCazador(BaseModel):
-    usuario_id: int
+    usuario_id: str # Supabase usa UUID, que es un string
     peso_corporal_kg: float
     unidad_examen: str = "kg"  # 'kg' o 'lb'
     meses_entrenando: int
     dias_por_semana: int
-    peso_empuje: float         # Press Banca o 0 si hizo Flexiones
+    peso_empuje: float         
     reps_empuje: int
-    peso_traccion: float       # Remo con Barra o 0 si hizo Dominadas
+    peso_traccion: float       
     reps_traccion: int
-    peso_pierna: float         # Sentadilla o 0 si fue a peso corporal
+    peso_pierna: float         
     reps_pierna: int
 
-@app.post("/crear_cazador")
-def crear_cazador(datos: CazadorNuevo, db: Session = Depends(get_db)):
-    cazador_existente = db.query(models.Usuario).filter(models.Usuario.nombre == datos.nombre).first()
-    
-    if cazador_existente:
-        raise HTTPException(status_code=400, detail="Ese Alias ya está ocupado por otro Cazador.")
-        
-    nuevo_usuario = models.Usuario(
-        nombre=datos.nombre,
-        genero=datos.genero
-    )
-    db.add(nuevo_usuario)
-    db.commit()
-    db.refresh(nuevo_usuario)
-    
-    return {"tu_id_oficial": nuevo_usuario.id}
-
-# --- ENDPOINT: EXAMEN DE DESPERTAMIENTO (ASIGNA RANGO, NIVEL BASE Y BANISTER) ---
-@app.post("/evaluar_cazador")
-def evaluar_cazador(datos: EvaluacionCazador, db: Session = Depends(get_db)):
-    usuario = db.query(models.Usuario).filter(models.Usuario.id == datos.usuario_id).first()
-    if not usuario:
-        raise HTTPException(status_code=404, detail="Cazador no encontrado.")
-
-    factor_conv = 0.453592 if datos.unidad_examen.lower() == "lb" else 1.0
-    peso_corp_kg = datos.peso_corporal_kg * factor_conv if datos.unidad_examen.lower() == "lb" else datos.peso_corporal_kg
-
-    p_emp_kg = (datos.peso_empuje * factor_conv) if datos.peso_empuje > 0 else (peso_corp_kg * 0.64)
-    p_trac_kg = (datos.peso_traccion * factor_conv) if datos.peso_traccion > 0 else (peso_corp_kg * 0.95)
-    p_pier_kg = (datos.peso_pierna * factor_conv) if datos.peso_pierna > 0 else (peso_corp_kg * 0.75)
-
-    rm_empuje = p_emp_kg * (1 + (datos.reps_empuje / 30.0)) if datos.reps_empuje > 0 else 0
-    rm_traccion = p_trac_kg * (1 + (datos.reps_traccion / 30.0)) if datos.reps_traccion > 0 else 0
-    rm_pierna = p_pier_kg * (1 + (datos.reps_pierna / 30.0)) if datos.reps_pierna > 0 else 0
-
-    promedio_1rm = (rm_empuje + rm_traccion + rm_pierna) / 3.0
-    ifr = promedio_1rm / max(peso_corp_kg, 40.0)
-
-    factor_experiencia = min(datos.meses_entrenando / 12.0, 2.0) * (datos.dias_por_semana / 4.0)
-    puntaje_cazador = (ifr * 0.75) + (factor_experiencia * 0.25)
-
-    # Asignación Científica: Rango + Nivel Inicial del Rango + Constantes Banister
-    if datos.meses_entrenando <= 1 or puntaje_cazador < 0.55:
-        rango_eval = "Rango E (Despertado)"
-        nivel_base_rango = 1
-        usuario.tau_1 = 45.0
-        usuario.tau_2 = 12.0
-    elif puntaje_cazador < 0.80:
-        rango_eval = "Rango D (Novato de Gremio)"
-        nivel_base_rango = 5
-        usuario.tau_1 = 42.0
-        usuario.tau_2 = 9.0
-    elif puntaje_cazador < 1.10:
-        rango_eval = "Rango C (Veterano de Incursión)"
-        nivel_base_rango = 10
-        usuario.tau_1 = 42.0
-        usuario.tau_2 = 7.0
-    elif puntaje_cazador < 1.35:
-        rango_eval = "Rango B (Élite de Asalto)"
-        nivel_base_rango = 15
-        usuario.tau_1 = 40.0
-        usuario.tau_2 = 6.0
-    elif puntaje_cazador < 1.65:
-        rango_eval = "Rango A (Fuerza Principal)"
-        nivel_base_rango = 20
-        usuario.tau_1 = 38.0
-        usuario.tau_2 = 5.0
-    else:
-        rango_eval = "Rango S (Cazador de Nivel Nacional)"
-        nivel_base_rango = 24
-        usuario.tau_1 = 35.0
-        usuario.tau_2 = 4.0
-
-    # Inyectamos la XP base para que el Cazador inicie en el piso de su Rango asignado
-    # Como calcular_nivel(xp) = sqrt(xp / 100), entonces xp_necesaria = (nivel^2) * 100
-    xp_piso_rango = float((nivel_base_rango ** 2) * 100) if nivel_base_rango > 1 else 0.0
-    grupos_maestros = ["Pecho", "Espalda", "Pierna", "Hombro", "Brazo", "Core"]
-
-    for grp in grupos_maestros:
-        musculo_db = db.query(models.MusculoXP).filter(
-            models.MusculoXP.usuario_id == datos.usuario_id,
-            models.MusculoXP.grupo_muscular == grp
-        ).first()
-        if musculo_db:
-            if musculo_db.xp_acumulada_kg < xp_piso_rango:
-                musculo_db.xp_acumulada_kg = xp_piso_rango
-                musculo_db.nivel = nivel_base_rango
-        else:
-            nuevo_m = models.MusculoXP(
-                usuario_id=datos.usuario_id,
-                grupo_muscular=grp,
-                xp_acumulada_kg=xp_piso_rango,
-                nivel=nivel_base_rango
-            )
-            db.add(nuevo_m)
-
-    db.commit()
-
-    return {
-        "estatus": "Calibración Completada",
-        "rango_fisiologico_detectado": rango_eval,
-        "nivel_inicial_asignado": nivel_base_rango,
-        "indice_fuerza_relativa": round(ifr, 2),
-        "tau_1_asignado": usuario.tau_1,
-        "tau_2_asignado": usuario.tau_2,
-        "mensaje": f"Se te ha asignado el {rango_eval} (Inicias en Nivel {nivel_base_rango})."
-    }
-
 class Entrenamiento(BaseModel):
-    usuario_id: int
+    usuario_id: str # Supabase usa UUID
     peso_corporal_kg: float
     ejercicio: str
     grupo_muscular: str
@@ -411,10 +302,8 @@ LORE_HISTORICO = {
 
 def calcular_nivel(xp_acumulada: float):
     nivel_calculado = int(math.sqrt(xp_acumulada / 100.0))
-    if nivel_calculado < 1:
-        return 1
-    elif nivel_calculado > 25:
-        return 25
+    if nivel_calculado < 1: return 1
+    elif nivel_calculado > 25: return 25
     return nivel_calculado
 
 def obtener_rango_global(promedio_niveles: float):
@@ -432,28 +321,145 @@ def obtener_categoria_peso(peso_kg: float):
     elif peso_kg < 100: return "Ares (Semi-Pesado)"
     else: return "Minotauro (Pesado)"
 
+
 @app.get("/")
 def estado_servidor():
-    return {"estatus": "Servidor SIF activo", "mensaje": "Esperando inyeccion de datos"}
+    return {"estatus": "Servidor SIF activo en SUPABASE", "mensaje": "Esperando inyección de datos del Coliseo"}
 
+# =========================================================================================
+# 🛡️ 1. CREACIÓN DE CUENTA EN SUPABASE (LOGIN/REGISTER)
+# =========================================================================================
+@app.post("/crear_cazador")
+def crear_cazador(datos: CazadorNuevo):
+    # 1. Crear el usuario en el motor de Autenticación de Supabase (blindaje maestro)
+    try:
+        res_auth = supabase.auth.sign_up({
+            "email": datos.email,
+            "password": datos.password,
+        })
+        if not res_auth.user:
+            raise HTTPException(status_code=400, detail="Ese Alias/Correo ya está en el Coliseo.")
+        
+        cazador_id_uuid = res_auth.user.id
+    except Exception as e:
+        # Si ya existe o falla el Auth, tiramos error para que el frontend lo cache
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    # 2. Inyectar sus datos iniciales a la tabla `cazadores`
+    nuevo_perfil = {
+        "id": cazador_id_uuid,
+        "alias": datos.nombre,
+        "genero": datos.genero,
+        "peso_kg": 72.0, # Se actualiza en la calibracion
+        "rango_global": "Rango E",
+        "nivel_promedio": 1.0,
+        "xp_total": 0.0
+    }
+    
+    supabase.table("cazadores").insert(nuevo_perfil).execute()
+    
+    return {"tu_id_oficial": cazador_id_uuid}
+
+
+# =========================================================================================
+# 🧬 2. EXAMEN CIENTÍFICO Y CALIBRACIÓN DE RANGO EN SUPABASE
+# =========================================================================================
+@app.post("/evaluar_cazador")
+def evaluar_cazador(datos: EvaluacionCazador):
+    # Buscamos al usuario en la nube
+    res_usuario = supabase.table("cazadores").select("*").eq("id", datos.usuario_id).execute()
+    if not res_usuario.data:
+        raise HTTPException(status_code=404, detail="Cazador no encontrado.")
+    
+    usuario_db = res_usuario.data[0]
+    genero_db = usuario_db['genero']
+
+    factor_conv = 0.453592 if datos.unidad_examen.lower() == "lb" else 1.0
+    peso_corp_kg = datos.peso_corporal_kg * factor_conv if datos.unidad_examen.lower() == "lb" else datos.peso_corporal_kg
+
+    p_emp_kg = (datos.peso_empuje * factor_conv) if datos.peso_empuje > 0 else (peso_corp_kg * 0.64)
+    p_trac_kg = (datos.peso_traccion * factor_conv) if datos.peso_traccion > 0 else (peso_corp_kg * 0.95)
+    p_pier_kg = (datos.peso_pierna * factor_conv) if datos.peso_pierna > 0 else (peso_corp_kg * 0.75)
+
+    rm_empuje = p_emp_kg * (1 + (datos.reps_empuje / 30.0)) if datos.reps_empuje > 0 else 0
+    rm_traccion = p_trac_kg * (1 + (datos.reps_traccion / 30.0)) if datos.reps_traccion > 0 else 0
+    rm_pierna = p_pier_kg * (1 + (datos.reps_pierna / 30.0)) if datos.reps_pierna > 0 else 0
+
+    promedio_1rm = (rm_empuje + rm_traccion + rm_pierna) / 3.0
+    ifr = promedio_1rm / max(peso_corp_kg, 40.0)
+
+    factor_experiencia = min(datos.meses_entrenando / 12.0, 2.0) * (datos.dias_por_semana / 4.0)
+    puntaje_cazador = (ifr * 0.75) + (factor_experiencia * 0.25)
+
+    if datos.meses_entrenando <= 1 or puntaje_cazador < 0.55:
+        rango_eval = "Rango E (Despertado)"
+        nivel_base_rango = 1
+    elif puntaje_cazador < 0.80:
+        rango_eval = "Rango D (Novato de Gremio)"
+        nivel_base_rango = 5
+    elif puntaje_cazador < 1.10:
+        rango_eval = "Rango C (Veterano de Incursión)"
+        nivel_base_rango = 10
+    elif puntaje_cazador < 1.35:
+        rango_eval = "Rango B (Élite de Asalto)"
+        nivel_base_rango = 15
+    elif puntaje_cazador < 1.65:
+        rango_eval = "Rango A (Fuerza Principal)"
+        nivel_base_rango = 20
+    else:
+        rango_eval = "Rango S (Cazador de Nivel Nacional)"
+        nivel_base_rango = 24
+
+    # Parche 0.0 XP para cuentas nivel 1:
+    xp_piso_rango = float((nivel_base_rango ** 2) * 100) if nivel_base_rango > 1 else 0.0
+    
+    # Creamos el JSON de los músculos para inyectarlo en Supabase
+    musculos_calibrados = {
+        "Pecho": {"xp": xp_piso_rango, "nivel": nivel_base_rango},
+        "Espalda": {"xp": xp_piso_rango, "nivel": nivel_base_rango},
+        "Pierna": {"xp": xp_piso_rango, "nivel": nivel_base_rango},
+        "Hombro": {"xp": xp_piso_rango, "nivel": nivel_base_rango},
+        "Brazo": {"xp": xp_piso_rango, "nivel": nivel_base_rango},
+        "Core": {"xp": xp_piso_rango, "nivel": nivel_base_rango}
+    }
+    xp_total_calibrada = xp_piso_rango * 6
+
+    # Actualizamos al cazador en la tabla maestra
+    supabase.table("cazadores").update({
+        "peso_kg": peso_corp_kg,
+        "rango_global": rango_eval,
+        "nivel_promedio": nivel_base_rango,
+        "xp_total": xp_total_calibrada,
+        "musculos": musculos_calibrados
+    }).eq("id", datos.usuario_id).execute()
+
+    return {
+        "estatus": "Calibración Completada",
+        "rango_fisiologico_detectado": rango_eval,
+        "nivel_inicial_asignado": nivel_base_rango,
+        "indice_fuerza_relativa": round(ifr, 2),
+        "mensaje": f"Se te ha asignado el {rango_eval} (Inicias en Nivel {nivel_base_rango})."
+    }
+
+
+# =========================================================================================
+# 🩸 3. INYECCIÓN DE ENTRENAMIENTOS Y MAPA DE CALOR A SUPABASE
+# =========================================================================================
 @app.post("/registrar_entrenamiento")
-def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
-    usuario = db.query(models.Usuario).filter(models.Usuario.id == datos.usuario_id).first()
-    if not usuario:
+def registrar(datos: Entrenamiento):
+    res_usuario = supabase.table("cazadores").select("*").eq("id", datos.usuario_id).execute()
+    if not res_usuario.data:
         return {"estatus": "error", "mensaje": "El Cazador no existe en el Sistema."}
     
-    # Si peso > 0 usa el peso que le pusiste (ej. Crunch con disco); si es 0 usa % corporal
+    usuario_db = res_usuario.data[0]
+    
     if datos.peso <= 0:
         porcentaje_bw = PORCENTAJE_PESO_CORPORAL.get(datos.ejercicio, 0.50)
         peso_estandar = datos.peso_corporal_kg * porcentaje_bw
     else:
-        if datos.unidad == "lb":
-            peso_estandar = datos.peso * 0.453592
-        else:
-            peso_estandar = datos.peso 
+        peso_estandar = datos.peso * 0.453592 if datos.unidad == "lb" else datos.peso 
         
     tonelaje_interno_kg = peso_estandar * datos.repeticiones * datos.series
-    
     calculo_1rm_kg = peso_estandar * (1 + (datos.repeticiones / 30.0))
     factor = FACTOR_MUSCULO.get(datos.grupo_muscular, 1.5)
     fuerza_ajustada = calculo_1rm_kg * factor
@@ -461,62 +467,73 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
     multiplicador_fuerza = fuerza_ajustada / max(datos.peso_corporal_kg, 40.0)
     xp_base_total = tonelaje_interno_kg * multiplicador_fuerza
 
-    if datos.ejercicio in CATALOGO_EJERCICIOS:
-        distribucion = CATALOGO_EJERCICIOS[datos.ejercicio]
-    elif datos.grupo_muscular in CATALOGO_GRUPOS_MUSCULARES:
-        distribucion = CATALOGO_GRUPOS_MUSCULARES[datos.grupo_muscular]
-    else:
-        distribucion = {"General": 1.0}
+    if datos.ejercicio in CATALOGO_EJERCICIOS: distribucion = CATALOGO_EJERCICIOS[datos.ejercicio]
+    elif datos.grupo_muscular in CATALOGO_GRUPOS_MUSCULARES: distribucion = CATALOGO_GRUPOS_MUSCULARES[datos.grupo_muscular]
+    else: distribucion = {"General": 1.0}
+    
+    # Descargamos sus músculos actuales de Supabase
+    musculos_actuales = dict(usuario_db.get("musculos", {}))
     
     progreso_musculos = {}
+    
     for nombre_musculo, porcentaje in distribucion.items():
         xp_ganada = round(xp_base_total * porcentaje, 2)
+        cat_principal = MAPEO_GRUPOS_PRINCIPALES.get(nombre_musculo, "Core")
         
-        musculo_db = db.query(models.MusculoXP).filter(
-            models.MusculoXP.usuario_id == datos.usuario_id,
-            models.MusculoXP.grupo_muscular == nombre_musculo
-        ).first()
+        # Le sumamos la XP ganada hoy
+        xp_previa = musculos_actuales.get(cat_principal, {}).get("xp", 0.0)
+        xp_nueva = xp_previa + xp_ganada
+        nivel_nuevo = calcular_nivel(xp_nueva)
         
-        if musculo_db:
-            musculo_db.xp_acumulada_kg += xp_ganada
-        else:
-            musculo_db = models.MusculoXP(
-                usuario_id=datos.usuario_id,
-                grupo_muscular=nombre_musculo,
-                xp_acumulada_kg=xp_ganada,
-                nivel=1
-            )
-            db.add(musculo_db)
-            
-        nivel_nuevo = calcular_nivel(musculo_db.xp_acumulada_kg)
-        musculo_db.nivel = nivel_nuevo
+        musculos_actuales[cat_principal] = {"xp": round(xp_nueva, 2), "nivel": nivel_nuevo}
         
-        progreso_musculos[nombre_musculo] = {
+        progreso_musculos[cat_principal] = {
             "xp_ganada": xp_ganada,
             "nivel_actual": nivel_nuevo,
-            "mensaje_sistema": LORE_HISTORICO.get(nivel_nuevo, LORE_HISTORICO[25])[usuario.genero]
+            "mensaje_sistema": LORE_HISTORICO.get(nivel_nuevo, LORE_HISTORICO[25])[usuario_db['genero']]
         }
-            
-    nuevo_registro_historial = models.HistorialEntrenamiento(
-        usuario_id=datos.usuario_id,
-        ejercicio=datos.ejercicio,
-        carga_xp=xp_base_total
-    )
-    db.add(nuevo_registro_historial)
-    db.commit()
-    
-    todos_los_musculos = db.query(models.MusculoXP).filter(
-        models.MusculoXP.usuario_id == datos.usuario_id
-    ).all()
-    
-    grupos_tmp = {"Pecho": 0.0, "Espalda": 0.0, "Pierna": 0.0, "Hombro": 0.0, "Brazo": 0.0, "Core": 0.0}
-    for m in todos_los_musculos:
-        cat = MAPEO_GRUPOS_PRINCIPALES.get(m.grupo_muscular, "Core")
-        grupos_tmp[cat] += m.xp_acumulada_kg
 
-    suma_niveles_tmp = sum(calcular_nivel(xp) for xp in grupos_tmp.values())
+    # Calculamos Nivel Promedio General
+    suma_niveles_tmp = sum(m_data["nivel"] for m_data in musculos_actuales.values())
     promedio_niveles = suma_niveles_tmp / 6.0
     rango_global = obtener_rango_global(promedio_niveles)
+    xp_global_nueva = sum(m_data["xp"] for m_data in musculos_actuales.values())
+
+    # Actualizamos el Perfil en la Nube
+    supabase.table("cazadores").update({
+        "rango_global": rango_global,
+        "nivel_promedio": round(promedio_niveles, 1),
+        "xp_total": round(xp_global_nueva, 2),
+        "musculos": musculos_actuales,
+        "estamina": usuario_db.get("estamina", 0.0) + (xp_base_total * 0.1), # Aumenta la fatiga
+        "fecha_ultimo_entrenamiento": str(datetime.date.today())
+    }).eq("id", datos.usuario_id).execute()
+
+    # Guardamos el Entrenamiento en la Bitácora
+    registro_bitacora = {
+        "cazador_id": datos.usuario_id,
+        "grupo_muscular": datos.grupo_muscular,
+        "ejercicio": datos.ejercicio,
+        "peso_kg": peso_estandar,
+        "repeticiones": datos.repeticiones,
+        "series": datos.series,
+        "xp_ganada": xp_base_total
+    }
+    supabase.table("entrenamientos").insert(registro_bitacora).execute()
+
+    # Verificamos si rompió Récord 1RM y lo guardamos
+    try:
+        supabase.table("records_1rm").upsert({
+            "cazador_id": datos.usuario_id,
+            "grupo_muscular": datos.grupo_muscular,
+            "ejercicio": datos.ejercicio,
+            "peso_real": datos.peso,
+            "unidad": datos.unidad,
+            "reps": datos.repeticiones,
+            "rm_estimado": calculo_1rm_kg
+        }, on_conflict="cazador_id,ejercicio").execute()
+    except Exception as e:
+        pass # Si falla el récord no abortamos todo
     
     return {
         "estatus": "Entrenamiento Registrado",
@@ -530,111 +547,74 @@ def registrar(datos: Entrenamiento, db: Session = Depends(get_db)):
         "reporte_musculos": progreso_musculos
     }
 
+
+# =========================================================================================
+# 📊 4. CARGAR PERFIL DEL CAZADOR
+# =========================================================================================
 @app.get("/cazador/{usuario_id}/perfil")
-def ver_perfil_cazador(usuario_id: int, db: Session = Depends(get_db)):
-    usuario = db.query(models.Usuario).filter(models.Usuario.id == usuario_id).first()
-    if not usuario:
+def ver_perfil_cazador(usuario_id: str):
+    res_usuario = supabase.table("cazadores").select("*").eq("id", usuario_id).execute()
+    if not res_usuario.data:
         return {"estatus": "error", "mensaje": "Cazador no encontrado"}
         
-    musculos = db.query(models.MusculoXP).filter(models.MusculoXP.usuario_id == usuario_id).all()
-    if not musculos:
-        return {"cazador": usuario.nombre, "rango_global": "Rango E (Despertado)", "mensaje": LORE_HISTORICO[1][usuario.genero]}
-        
-    ultimo_entrenamiento = db.query(models.HistorialEntrenamiento).filter(
-        models.HistorialEntrenamiento.usuario_id == usuario_id
-    ).order_by(models.HistorialEntrenamiento.fecha_hora.desc()).first()
-
+    usuario = res_usuario.data[0]
+    musculos_db = usuario.get("musculos", {})
+    
+    # Calculo de atrofia
     dias_inactivo = 0
     factor_atrofia = 1.0
+    fecha_str = usuario.get("fecha_ultimo_entrenamiento")
     
-    if ultimo_entrenamiento:
-        ahora = datetime.datetime.now(datetime.timezone.utc)
-        fecha_ultima = ultimo_entrenamiento.fecha_hora.replace(tzinfo=datetime.timezone.utc) if ultimo_entrenamiento.fecha_hora.tzinfo is None else ultimo_entrenamiento.fecha_hora
-        dias_inactivo = (ahora - fecha_ultima).total_seconds() / (24 * 3600)
-        
+    if fecha_str:
+        fecha_ultima = datetime.datetime.strptime(fecha_str, "%Y-%m-%d").date()
+        dias_inactivo = (datetime.date.today() - fecha_ultima).days
         if dias_inactivo >= 15:
-            dias_penalizados = int(dias_inactivo) - 15
+            dias_penalizados = dias_inactivo - 15
             factor_atrofia = (1 - 0.025) ** dias_penalizados
+            
+            # Aplicamos la atrofia a los musculos
+            for cat in musculos_db:
+                musculos_db[cat]["xp"] = musculos_db[cat]["xp"] * factor_atrofia
+                musculos_db[cat]["nivel"] = calcular_nivel(musculos_db[cat]["xp"])
+            
+            supabase.table("cazadores").update({"musculos": musculos_db}).eq("id", usuario_id).execute()
 
-    grupos_consolidados = {
-        "Pecho": 0.0, "Espalda": 0.0, "Pierna": 0.0, 
-        "Hombro": 0.0, "Brazo": 0.0, "Core": 0.0
-    }
+    nivel_general_entero = max(1, int(usuario.get("nivel_promedio", 1)))
     
-    for m in musculos:
-        xp_efectiva = m.xp_acumulada_kg * factor_atrofia
-        categoria_principal = MAPEO_GRUPOS_PRINCIPALES.get(m.grupo_muscular, "Core")
-        grupos_consolidados[categoria_principal] += xp_efectiva
-
-    mapa_musculos = {}
-    suma_niveles = 0
-    
-    for grupo, xp_total in grupos_consolidados.items():
-        nivel_efectivo = calcular_nivel(xp_total)
-        suma_niveles += nivel_efectivo
-        mapa_musculos[grupo] = {"nivel": nivel_efectivo, "xp": round(xp_total, 2)}
-        
-    promedio_niveles = suma_niveles / 6.0
-    rango_actual = obtener_rango_global(promedio_niveles)
-    nivel_general_entero = max(1, int(promedio_niveles))
     return {
-        "cazador": usuario.nombre,
-        "rango_global": rango_actual,
-        "nivel_promedio": round(promedio_niveles, 1),
-        "estatus_sistema": LORE_HISTORICO.get(nivel_general_entero, LORE_HISTORICO[25])[usuario.genero],
-        "musculos": mapa_musculos
+        "cazador": usuario["alias"],
+        "rango_global": usuario["rango_global"],
+        "nivel_promedio": usuario["nivel_promedio"],
+        "estatus_sistema": LORE_HISTORICO.get(nivel_general_entero, LORE_HISTORICO[25])[usuario['genero']],
+        "musculos": musculos_db
     }
 
 @app.get("/estamina/{usuario_id}")
-def calcular_estamina(usuario_id: int, db: Session = Depends(get_db)):
-    usuario = db.query(models.Usuario).filter(models.Usuario.id == usuario_id).first()
-    if not usuario: return {"estatus": "error"}
+def calcular_estamina(usuario_id: str):
+    res_usuario = supabase.table("cazadores").select("estamina, fecha_ultimo_entrenamiento").eq("id", usuario_id).execute()
+    if not res_usuario.data: return {"estatus": "error"}
+    
+    usuario = res_usuario.data[0]
+    fatiga_actual = usuario.get("estamina", 0.0)
+    
+    # Recuperación pasiva
+    fecha_str = usuario.get("fecha_ultimo_entrenamiento")
+    dias_inactivo = 0
+    if fecha_str:
+        fecha_ultima = datetime.datetime.strptime(fecha_str, "%Y-%m-%d").date()
+        dias_inactivo = (datetime.date.today() - fecha_ultima).days
         
-    historial = db.query(models.HistorialEntrenamiento).filter(
-        models.HistorialEntrenamiento.usuario_id == usuario_id
-    ).order_by(models.HistorialEntrenamiento.fecha_hora.desc()).all()
-    
-    if not historial: return {"diagnostico": "⚡ ¡Condición Óptima!", "estamina": 0.0, "dias_inactivo": 0}
+        # Se recupera un 35% de estamina por dia
+        fatiga_actual = fatiga_actual * ((1 - 0.35) ** dias_inactivo)
         
-    ahora = datetime.datetime.now(datetime.timezone.utc)
+    vida_real = 100.0 - (fatiga_actual * 0.5)
     
-    tau_1 = usuario.tau_1 if usuario.tau_1 else 42.0
-    tau_2 = usuario.tau_2 if usuario.tau_2 else 7.0
-    
-    colchon_snc_base = (15.0 / max(tau_2, 4.0)) * 25000.0
-    
-    condicion_total = colchon_snc_base
-    fatiga_total = 0.0
-    
-    ultimo_ent = historial[0]
-    fecha_ultima = ultimo_ent.fecha_hora.replace(tzinfo=datetime.timezone.utc) if ultimo_ent.fecha_hora.tzinfo is None else ultimo_entrenamiento_fecha(ultimo_ent)
-    dias_inactivo = (ahora - fecha_ultima).total_seconds() / (24 * 3600)
-    
-    for registro in historial:
-        fecha_registro = registro.fecha_hora.replace(tzinfo=datetime.timezone.utc) if registro.fecha_hora.tzinfo is None else registro.fecha_hora
-        dias_pasados = max(0.0, (ahora - fecha_registro).total_seconds() / (24 * 3600))
-        carga = registro.carga_xp
-        
-        condicion_total += (carga * 1.0) * math.exp(-dias_pasados / tau_1)
-        fatiga_total += (carga * 1.25) * math.exp(-dias_pasados / tau_2)
-        
-    ratio_desgaste = fatiga_total / max(condicion_total, 1.0)
-    indice_desgaste_para_html = min(190.0, ratio_desgaste * 90.0)
-    
-    vida_real = 100.0 - (indice_desgaste_para_html * 0.5)
-    
-    if vida_real < 30.0:
-        estado_cazador = "⚠️ Sistema Sobrecargado"
-    elif vida_real >= 70.0:
-        estado_cazador = "⚡ ¡Condición Óptima!"
-    else:
-        estado_cazador = "🔋 En recuperación activa."
+    if vida_real < 30.0: estado_cazador = "⚠️ Sistema Sobrecargado"
+    elif vida_real >= 70.0: estado_cazador = "⚡ ¡Condición Óptima!"
+    else: estado_cazador = "🔋 En recuperación activa."
         
     return {
         "diagnostico": estado_cazador, 
-        "estamina": round(indice_desgaste_para_html, 1),
+        "estamina": round(fatiga_actual, 1),
         "dias_inactivo": int(dias_inactivo)
     }
-
-def ultimo_entrenamiento_fecha(registro):
-    return registro.fecha_hora.replace(tzinfo=datetime.timezone.utc) if registro.fecha_hora.tzinfo is None else registro.fecha_hora
