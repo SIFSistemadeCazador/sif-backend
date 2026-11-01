@@ -120,7 +120,7 @@ def evaluar_cazador(datos: EvaluacionCazador, db: Session = Depends(get_db)):
 
     # Inyectamos la XP base para que el Cazador inicie en el piso de su Rango asignado
     # Como calcular_nivel(xp) = sqrt(xp / 100), entonces xp_necesaria = (nivel^2) * 100
-    xp_piso_rango = float((nivel_base_rango ** 2) * 100) if nivel_base_rango > 1 else 100.0
+    xp_piso_rango = float((nivel_base_rango ** 2) * 100) if nivel_base_rango > 1 else 0.0
     grupos_maestros = ["Pecho", "Espalda", "Pierna", "Hombro", "Brazo", "Core"]
 
     for grp in grupos_maestros:
